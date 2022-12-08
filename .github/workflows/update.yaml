@@ -1,0 +1,25 @@
+on:
+  push:
+  schedule:
+    - cron: '24 13 * * *'
+  workflow_dispatch:
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: update
+        run: |
+          git config --local user.name 'github-actions[bot]'
+          git config --local user.email 'github-actions[bot]@users.noreply.github.com'
+          curl -L 'https://api.dler.io/sub?target=clash&new_name=true&url=https%3A%2F%2Fjiang.netlify.app' -o jiang.yaml
+          curl -L 'https://api.dler.io/sub?target=clash&new_name=true&url=https%3A%2F%2Fishare1024.netlify.com' -o ishare1024.yaml
+          curl -L 'https://api.dler.io/sub?target=clash&new_name=true&url=https%3A%2F%2Fiwxf.netlify.app' -o iwxf.yaml
+          git add .
+          git commit -m "update"
+      - name: Push changes
+        uses: ad-m/github-push-action@master
+        with:
+          branch: master
+          force: true
