@@ -4,22 +4,109 @@ on:
     - cron: '24 13 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
+concurrency:
+  group: subscription-update
+  cancel-in-progress: false
+
 jobs:
   bot:
     runs-on: ubuntu-latest
+
+    services:
+      subconverter:
+        image: tindy2013/subconverter:latest
+        ports:
+          - 25500:25500
+
     steps:
-      - uses: actions/checkout@v4
-      - name: update
-        run: |
-          git config --local user.name 'github-actions[bot]'
-          git config --local user.email 'github-actions[bot]@users.noreply.github.com'
-          curl -L 'https://api.dler.io/sub?target=clash&new_name=true&url=https%3A%2F%2Fjiang.netlify.app' -o jiang.yaml
-          curl -L 'https://api.dler.io/sub?target=clash&new_name=true&url=https%3A%2F%2Fishare1024.netlify.com' -o ishare1024.yaml
-          curl -L 'https://api.dler.io/sub?target=clash&new_name=true&url=https%3A%2F%2Fiwxf.netlify.app' -o iwxf.yaml
-          git add .
-          git commit -m "update"
-      - name: Push changes
-        uses: ad-m/github-push-action@master
+      - name: Checkout main
+        uses: actions/checkout@v7
         with:
-          branch: master
-          force: true
+          ref: main
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Update subscription files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'PyYAML==6.0.3'
+
+          echo 'Waiting for subconverter...'
+          ready=0
+          for i in {1..30}; do
+            if curl --fail --silent --show-error --connect-timeout 2 \
+              --max-time 3 http://127.0.0.1:25500/version; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$ready" -ne 1 ]; then
+            echo '::error::subconverter did not become ready'
+            exit 1
+          fi
+
+          convert() {
+            local source="$1"
+            local output="$2"
+            local temp="${output}.tmp"
+
+            rm -f -- "$temp"
+            curl --fail --silent --show-error --location \
+              --retry 3 --retry-delay 2 \
+              --connect-timeout 10 --max-time 120 \
+              --get \
+              --data-urlencode 'target=clash' \
+              --data-urlencode 'new_name=true' \
+              --data-urlencode "url=${source}" \
+              'http://127.0.0.1:25500/sub' \
+              --output "$temp"
+
+            python - "$temp" <<'PY'
+          import sys
+          import yaml
+
+          path = sys.argv[1]
+          with open(path, encoding='utf-8') as f:
+              data = yaml.safe_load(f)
+
+          if not isinstance(data, dict):
+              raise SystemExit(f'{path}: not a YAML mapping')
+          proxies = data.get('proxies')
+          if not isinstance(proxies, list) or not proxies:
+              raise SystemExit(f'{path}: invalid Clash subscription (proxies missing or empty)')
+          print(f'{path}: {len(proxies)} proxies')
+          PY
+
+            mv -- "$temp" "$output"
+          }
+
+          convert 'https://jiang.netlify.app' jiang.yaml
+          convert 'https://ishare1024.netlify.com' ishare1024.yaml
+          convert 'https://iwxf.netlify.app' iwxf.yaml
+
+      - name: Commit and force push to master
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git add -- jiang.yaml ishare1024.yaml iwxf.yaml
+
+          if git diff --cached --quiet; then
+            echo 'No changes to commit.'
+            exit 0
+          fi
+
+          git commit -m 'update'
+          git push --force origin HEAD:refs/heads/master
